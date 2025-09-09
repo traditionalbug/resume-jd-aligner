@@ -5,27 +5,46 @@ export const runtime = "nodejs";
 
 type Body = { resume?: string; jd?: string };
 
-// --- simple mock if keys missing ---
+// ---- Strong types ----
+export type CriticJSON = {
+  score?: number;
+  missing_keywords?: string[];
+  rewrite_suggestions?: string[];
+  notes?: string;
+  // if a critic failed, we record a marker
+  error?: boolean;
+  which?: number;
+};
+
+export type EditorJSON = {
+  fitScore?: number;
+  missing_keywords?: string[];
+  key_gaps?: string[];
+  aligned_resume?: string;
+  rationale?: string;
+};
+
+// ---- mock helpers (unchanged) ----
 function tokenizeSample(s: string) {
   return Array.from(new Set(s.toLowerCase().match(/\b[a-z0-9+\-\.]{3,}\b/g) || []));
 }
 function mockScore(resume = "", jd = "") {
   const r = resume.toLowerCase();
   const terms = tokenizeSample(jd);
-  const matched = terms.filter(t => r.includes(t));
+  const matched = terms.filter((t) => r.includes(t));
   const fit = terms.length ? Math.round((matched.length / terms.length) * 100) : 0;
   return { fitScore: fit, matchedCount: matched.length, totalJDWords: terms.length, sampleMatches: matched.slice(0, 20) };
 }
 
-// --- critics ---
-async function criticGemini(resume: string, jd: string) {
+// ---- critics ----
+async function criticGemini(resume: string, jd: string): Promise<CriticJSON> {
   const model = gemini.getGenerativeModel({ model: MODELS.CRITIC_A });
   const prompt = `${criticSystem}\nRESUME:\n${resume}\n\nJD:\n${jd}`;
   const r = await model.generateContent(prompt);
-  return extractJson(r.response.text());
+  return extractJson(r.response.text()) as CriticJSON;
 }
 
-async function criticOpenAI(resume: string, jd: string) {
+async function criticOpenAI(resume: string, jd: string): Promise<CriticJSON> {
   const r = await openai.chat.completions.create({
     model: MODELS.CRITIC_B,
     temperature: 0.2,
@@ -36,10 +55,10 @@ async function criticOpenAI(resume: string, jd: string) {
     max_tokens: 800,
     response_format: { type: "json_object" },
   });
-  return JSON.parse(r.choices[0].message.content || "{}");
+  return JSON.parse(r.choices[0].message.content || "{}") as CriticJSON;
 }
 
-async function criticClaude(resume: string, jd: string) {
+async function criticClaude(resume: string, jd: string): Promise<CriticJSON> {
   const r = await anthropic.messages.create({
     model: MODELS.CRITIC_C,
     max_tokens: 800,
@@ -48,35 +67,39 @@ async function criticClaude(resume: string, jd: string) {
     messages: [{ role: "user", content: `RESUME:\n${resume}\n\nJD:\n${jd}` }],
   });
   const text = r.content[0].type === "text" ? r.content[0].text : "";
-  return extractJson(text);
+  return extractJson(text) as CriticJSON;
 }
 
-// --- editor ---
-async function editorConsolidate(resume: string, jd: string, critics: any[]) {
+// ---- editor ----
+async function editorConsolidate(resume: string, jd: string, critics: CriticJSON[]): Promise<EditorJSON> {
   const consolidated = JSON.stringify(critics);
   const r = await openai.chat.completions.create({
     model: MODELS.EDITOR,
     temperature: 0.2,
     messages: [
-      { role: "system", content:
-        `You are the single editor. Using critics JSON, produce JSON only:
+      {
+        role: "system",
+        content: `You are the single editor. Using critics JSON, produce JSON only:
 {"fitScore":0-100,"missing_keywords":["..."],"key_gaps":["..."],
  "aligned_resume":"<full rewritten resume text>","rationale":"..."}
-Return strictly valid JSON.` },
+Return strictly valid JSON.`,
+      },
       { role: "user", content: `CRITICS:\n${consolidated}\n\nRESUME:\n${resume}\n\nJD:\n${jd}\n` },
     ],
     max_tokens: 1400,
     response_format: { type: "json_object" },
   });
-  return JSON.parse(r.choices[0].message.content || "{}");
+  return JSON.parse(r.choices[0].message.content || "{}") as EditorJSON;
 }
 
-// --- consensus ---
-async function consensusPass(editorJson: any) {
+// ---- consensus ----
+async function consensusPass(editorJson: EditorJSON): Promise<EditorJSON> {
   const model = gemini.getGenerativeModel({ model: MODELS.CONSENSUS });
-  const prompt = `Review this editor JSON and return JSON only (fix obvious issues or return unchanged):\n${JSON.stringify(editorJson)}`;
+  const prompt = `Review this editor JSON and return JSON only (fix obvious issues or return unchanged):\n${JSON.stringify(
+    editorJson,
+  )}`;
   const r = await model.generateContent(prompt);
-  return extractJson(r.response.text());
+  return extractJson(r.response.text()) as EditorJSON;
 }
 
 export async function GET() {
@@ -94,12 +117,15 @@ export async function POST(req: Request) {
     }
 
     // critics in parallel
-    const [a, b, c] = await Promise.allSettled([
+    const results = await Promise.allSettled<CriticJSON>([
       criticGemini(resume, jd),
       criticOpenAI(resume, jd),
       criticClaude(resume, jd),
     ]);
-    const critics = [a, b, c].map((r, i) => (r.status === "fulfilled" ? r.value : { error: true, which: i }));
+
+    const critics: CriticJSON[] = results.map((r, i) =>
+      r.status === "fulfilled" ? r.value : ({ error: true, which: i } as CriticJSON),
+    );
 
     // editor → consensus
     const edited = await editorConsolidate(resume, jd, critics);
@@ -114,7 +140,8 @@ export async function POST(req: Request) {
       criticsCount: critics.length,
       note: "Live pipeline: critics → editor → consensus",
     });
-  } catch (err: any) {
-    return NextResponse.json({ error: "analysis_failed", details: err?.message ?? "unknown" }, { status: 500 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "unknown";
+    return NextResponse.json({ error: "analysis_failed", details: message }, { status: 500 });
   }
 }

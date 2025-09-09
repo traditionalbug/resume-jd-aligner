@@ -7,7 +7,6 @@ type AnalyzeResult = {
   totalJDWords?: number;
   sampleMatches?: string[];
   note?: string;
-  // live pipeline fields
   missingKeywords?: string[];
   keyGaps?: string[];
   alignedResume?: string;
@@ -39,10 +38,11 @@ export default function Page() {
         const text = await res.text();
         throw new Error(`HTTP ${res.status}: ${text}`);
       }
-      const data = await res.json();
+      const data = (await res.json()) as AnalyzeResult;
       setResult(data ?? {});
-    } catch (err: any) {
-      setError(err?.message || "Something went wrong. Try again.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Something went wrong. Try again.";
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -85,15 +85,10 @@ export default function Page() {
           </button>
         </form>
 
-        {error && (
-          <div className="text-red-400">
-            {error}
-          </div>
-        )}
+        {error && <div className="text-red-400">{error}</div>}
 
         {result && !error && (
           <div className="mt-6 rounded-2xl bg-zinc-800 p-4 space-y-3">
-            {/* Works for mock or live */}
             {typeof result.fitScore === "number" && (
               <div className="text-lg font-medium">Fit Score: {result.fitScore}%</div>
             )}
@@ -112,8 +107,6 @@ export default function Page() {
                 </div>
               </div>
             )}
-
-            {/* Live-only extras (render if present) */}
             {Array.isArray(result.missingKeywords) && result.missingKeywords.length > 0 && (
               <div className="text-sm">
                 <div className="text-zinc-400 mb-1">Missing keywords</div>
@@ -124,21 +117,13 @@ export default function Page() {
                 </div>
               </div>
             )}
-
             {result.alignedResume && (
               <div className="text-sm">
                 <div className="text-zinc-400 mb-1">Aligned resume (draft)</div>
-                <textarea
-                  className="w-full h-56 p-3 rounded-xl bg-zinc-900"
-                  value={result.alignedResume}
-                  readOnly
-                />
+                <textarea className="w-full h-56 p-3 rounded-xl bg-zinc-900" value={result.alignedResume} readOnly />
               </div>
             )}
-
-            {result.note && (
-              <p className="mt-1 text-xs text-zinc-400">{result.note}</p>
-            )}
+            {result.note && <p className="mt-1 text-xs text-zinc-400">{result.note}</p>}
           </div>
         )}
       </div>
