@@ -1,103 +1,147 @@
-import Image from "next/image";
+"use client";
+import { useState } from "react";
 
-export default function Home() {
+type AnalyzeResult = {
+  fitScore?: number;
+  matchedCount?: number;
+  totalJDWords?: number;
+  sampleMatches?: string[];
+  note?: string;
+  // live pipeline fields
+  missingKeywords?: string[];
+  keyGaps?: string[];
+  alignedResume?: string;
+  rationale?: string;
+  criticsCount?: number;
+  error?: string;
+  details?: string;
+} | null;
+
+export default function Page() {
+  const [resume, setResume] = useState("");
+  const [jd, setJd] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<AnalyzeResult>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resume, jd }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+      const data = await res.json();
+      setResult(data ?? {});
+    } catch (err: any) {
+      setError(err?.message || "Something went wrong. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <main className="min-h-screen p-6 md:p-10 bg-gradient-to-b from-zinc-900 to-black text-zinc-100">
+      <div className="mx-auto max-w-4xl space-y-6">
+        <h1 className="text-3xl md:text-4xl font-semibold">Resume ↔ JD Aligner (MVP)</h1>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div>
+            <label className="block mb-2 text-sm uppercase tracking-wide text-zinc-400">Resume</label>
+            <textarea
+              value={resume}
+              onChange={(e) => setResume(e.target.value)}
+              className="w-full h-40 p-3 rounded-xl bg-zinc-800 outline-none"
+              placeholder="Paste your resume text..."
+              required
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          </div>
+
+          <div>
+            <label className="block mb-2 text-sm uppercase tracking-wide text-zinc-400">Job Description</label>
+            <textarea
+              value={jd}
+              onChange={(e) => setJd(e.target.value)}
+              className="w-full h-40 p-3 rounded-xl bg-zinc-800 outline-none"
+              placeholder="Paste the JD text..."
+              required
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="px-5 py-3 rounded-2xl bg-white text-black font-medium disabled:opacity-50"
           >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+            {loading ? "Analyzing..." : "Analyze"}
+          </button>
+        </form>
+
+        {error && (
+          <div className="text-red-400">
+            {error}
+          </div>
+        )}
+
+        {result && !error && (
+          <div className="mt-6 rounded-2xl bg-zinc-800 p-4 space-y-3">
+            {/* Works for mock or live */}
+            {typeof result.fitScore === "number" && (
+              <div className="text-lg font-medium">Fit Score: {result.fitScore}%</div>
+            )}
+            {(typeof result.matchedCount === "number" && typeof result.totalJDWords === "number") && (
+              <div className="text-sm text-zinc-400">
+                {result.matchedCount} / {result.totalJDWords} JD terms detected in resume
+              </div>
+            )}
+            {Array.isArray(result.sampleMatches) && result.sampleMatches.length > 0 && (
+              <div className="text-sm">
+                <div className="text-zinc-400 mb-1">Sample matches</div>
+                <div className="flex flex-wrap gap-2">
+                  {result.sampleMatches.map((w, i) => (
+                    <span key={`${w}-${i}`} className="px-2 py-1 rounded-xl bg-zinc-700">{w}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Live-only extras (render if present) */}
+            {Array.isArray(result.missingKeywords) && result.missingKeywords.length > 0 && (
+              <div className="text-sm">
+                <div className="text-zinc-400 mb-1">Missing keywords</div>
+                <div className="flex flex-wrap gap-2">
+                  {result.missingKeywords.map((w, i) => (
+                    <span key={`${w}-${i}`} className="px-2 py-1 rounded-xl bg-zinc-700">{w}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {result.alignedResume && (
+              <div className="text-sm">
+                <div className="text-zinc-400 mb-1">Aligned resume (draft)</div>
+                <textarea
+                  className="w-full h-56 p-3 rounded-xl bg-zinc-900"
+                  value={result.alignedResume}
+                  readOnly
+                />
+              </div>
+            )}
+
+            {result.note && (
+              <p className="mt-1 text-xs text-zinc-400">{result.note}</p>
+            )}
+          </div>
+        )}
+      </div>
+    </main>
   );
 }
