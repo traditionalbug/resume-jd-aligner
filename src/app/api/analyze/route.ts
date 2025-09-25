@@ -4,18 +4,18 @@ import { MODELS, openai, anthropic, gemini, factSystem, extractJson } from "@/li
 import { z } from "zod";
 import {
   FactsJSON, TFactsJSON, TFact,
-  DiffJSON, TEditorJSON, EditorJSON,
+  EditorJSON, TEditorJSON,
   Coverage, TCoverage,
 } from "@/lib/schema";
 import { buildJDRequirements } from "@/lib/jd";
 
 export const runtime = "nodejs";
 
-/* ---------------- Config knobs (can move to env later) ---------------- */
-const FAST_PATH_THRESHOLD = Number(process.env.FAST_PATH_THRESHOLD ?? 88); // % coverage
+/* ---------------- Config ---------------- */
+const FAST_PATH_THRESHOLD = Number(process.env.FAST_PATH_THRESHOLD ?? 88);
 const CRITIC_TIMEOUT_MS = Number(process.env.CRITIC_TIMEOUT_MS ?? 3500);
 
-/* ---------------- Utilities ---------------- */
+/* ---------------- Utils ---------------- */
 type Body = { resume?: string; jd?: string };
 
 function tokenize(s: string) {
@@ -35,7 +35,16 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
-/* ---------------- Stage 1: Facts extractors ---------------- */
+/* ---------------- Facts extractors (hardened) ---------------- */
+async function tryExtract<T>(fn: () => Promise<T>, label: string): Promise<T | null> {
+  try {
+    return await fn();
+  } catch (e) {
+    console.error(`[facts_error] ${label}:`, e);
+    return null;
+  }
+}
+
 async function extractFactsGemini(resume: string): Promise<TFactsJSON> {
   const model = gemini.getGenerativeModel({ model: MODELS.CRITIC_A });
   const prompt = `${factSystem}\nRESUME:\n${resume}`;
@@ -75,7 +84,6 @@ async function extractFactsClaude(resume: string): Promise<TFactsJSON> {
   return FactsJSON.parse(raw);
 }
 
-// Merge/union facts from multiple bags
 function mergeFacts(bags: TFactsJSON[]): TFactsJSON {
   const map = new Map<string, TFact>();
   let i = 1;
@@ -88,8 +96,8 @@ function mergeFacts(bags: TFactsJSON[]): TFactsJSON {
   return { facts: Array.from(map.values()) };
 }
 
-/* ---------------- Stage 0: JD skill map + coverage ---------------- */
-function coverageAgainstFacts(jd: ReturnType<typeof buildJDRequirements>, facts: TFactsJSON): TCoverage {
+/* ---------------- JD coverage ---------------- */
+function coverageAgainstFacts(jdReq: ReturnType<typeof buildJDRequirements>, facts: TFactsJSON): TCoverage {
   const factText = facts.facts.map((f) => f.text.toLowerCase()).join(" \n ");
   const scoreOne = (arr: string[]) => {
     const total = arr.length;
@@ -101,20 +109,16 @@ function coverageAgainstFacts(jd: ReturnType<typeof buildJDRequirements>, facts:
     }
     return { covered, total, items_uncovered: uncovered };
   };
-  const must = scoreOne(jd.must_have);
-  const resp = scoreOne(jd.responsibilities);
-  const nice = scoreOne(jd.nice_to_have);
+  const must = scoreOne(jdReq.must_have);
+  const resp = scoreOne(jdReq.responsibilities);
+  const nice = scoreOne(jdReq.nice_to_have);
   const exact_match_ratio =
     (must.covered + resp.covered + nice.covered) / Math.max(1, must.total + resp.total + nice.total);
   return Coverage.parse({ must_have: must, responsibilities: resp, nice_to_have: nice, exact_match_ratio });
 }
 
-/* ---------------- Stage 3: Editor (same as before) ---------------- */
-async function editorRewrite(
-  resume: string,
-  facts: TFactsJSON,
-  supported: string[],
-): Promise<TEditorJSON> {
+/* ---------------- Editor (unchanged schema) ---------------- */
+async function editorRewrite(resume: string, facts: TFactsJSON, supported: string[]): Promise<TEditorJSON> {
   const r = await openai.chat.completions.create({
     model: MODELS.EDITOR,
     temperature: 0.2,
@@ -155,58 +159,107 @@ export async function GET() {
   return NextResponse.json({ ok: true, route: "/api/analyze" });
 }
 
-/* ---------------- POST (adaptive path) ---------------- */
+/* ---------------- POST ---------------- */
 export async function POST(req: Request) {
   try {
     const { resume = "", jd = "" } = (await req.json()) as Body;
 
+    // If keys missing → mock (never 500)
     if (!process.env.OPENAI_API_KEY || !process.env.GOOGLE_API_KEY || !process.env.ANTHROPIC_API_KEY) {
       const mock = mockScore(resume, jd);
       return NextResponse.json({ ...mock, note: "Using MOCK (missing one or more API keys)" });
     }
 
-    // 0) Build JD skill map locally
+    // 0) JD requirements (local)
     const jdReq = buildJDRequirements(jd);
 
-    // 1) FAST PATH: Critic A only
-    const factsA = await extractFactsGemini(resume);
-    const coverageA = coverageAgainstFacts(jdReq, factsA);
-    const coveragePctA = Math.round(coverageA.exact_match_ratio * 100);
+    // 1) Fast path (Critic A) with graceful handling
+    const factsA = await tryExtract(() => extractFactsGemini(resume), "gemini");
+    let mergedFacts: TFactsJSON | null = factsA;
 
-    let mergedFacts = factsA;
-    let pathNote = `Fast path (Critic A only). Coverage=${coveragePctA}%`;
-
-    // Escalate if below threshold
-    if (coveragePctA < FAST_PATH_THRESHOLD) {
-      const results = await Promise.allSettled([extractFactsOpenAI(resume), extractFactsClaude(resume)]);
-      const bags: TFactsJSON[] = [factsA];
-      for (const r of results) if (r.status === "fulfilled") bags.push(r.value);
-      mergedFacts = mergeFacts(bags);
-      const coverageFull = coverageAgainstFacts(jdReq, mergedFacts);
-      pathNote = `Full path (A+B+C). Coverage=${Math.round(coverageFull.exact_match_ratio * 100)}%`;
+    let note = "Fast path (Critic A only)";
+    if (!mergedFacts) {
+      note = "Fast path failed → escalating";
     }
 
-    // Supported phrases = those present in mergedFacts
+    // compute coverage if we have factsA
+    let coveragePctA = 0;
+    if (mergedFacts) {
+      const coverageA = coverageAgainstFacts(jdReq, mergedFacts);
+      coveragePctA = Math.round(coverageA.exact_match_ratio * 100);
+      note = `Fast path (Critic A only). Coverage=${coveragePctA}%`;
+    }
+
+    // Escalate if no factsA or below threshold
+    if (!mergedFacts || coveragePctA < FAST_PATH_THRESHOLD) {
+      const [b, c] = await Promise.allSettled([
+        tryExtract(() => extractFactsOpenAI(resume), "openai"),
+        tryExtract(() => extractFactsClaude(resume), "anthropic"),
+      ]);
+      const bags: TFactsJSON[] = [];
+      if (mergedFacts) bags.push(mergedFacts);
+      if (b.status === "fulfilled" && b.value) bags.push(b.value);
+      if (c.status === "fulfilled" && c.value) bags.push(c.value);
+
+      if (bags.length === 0) {
+        // final fallback: minimal facts from tokens (never 500)
+        const tokens = tokenize(resume).slice(0, 100);
+        const facts: TFact[] = tokens.map((t, idx) => ({ id: `f${idx + 1}`, type: "skill", text: t }));
+        mergedFacts = { facts };
+        note = "Degraded mode: minimal facts fallback";
+      } else {
+        mergedFacts = mergeFacts(bags);
+        const coverageFull = coverageAgainstFacts(jdReq, mergedFacts);
+        note = `Full path (A+B+C). Coverage=${Math.round(coverageFull.exact_match_ratio * 100)}%`;
+      }
+    }
+
+    // Supported/missing phrases
     const factText = mergedFacts.facts.map((f) => f.text.toLowerCase()).join(" \n ");
     const supported = jdReq.canonical_phrases.filter((p) => factText.includes(p.toLowerCase()));
     const missing = jdReq.canonical_phrases.filter((p) => !factText.includes(p.toLowerCase()));
 
-    // 2) Editor (constrained)
-    const editorOut = await editorRewrite(resume, mergedFacts, supported);
+    // 2) Editor (guard with try/catch → degrade if needed)
+    let editorOut: TEditorJSON | null = null;
+    try {
+      editorOut = await editorRewrite(resume, mergedFacts, supported);
+    } catch (e) {
+      console.error("[editor_error]", e);
+    }
 
-    // 3) Response
+    // Build response (even if editor failed)
+    if (!editorOut) {
+      const coverage = coverageAgainstFacts(jdReq, mergedFacts);
+      return NextResponse.json({
+        fitScore: Math.round(coverage.exact_match_ratio * 100),
+        uncoveredRequirements: missing,
+        keyGaps: missing.slice(0, 6),
+        alignedResume: "", // editor failed, so no aligned text
+        rationale: "Editor failed or timed out; returning coverage and gaps only.",
+        coverage,
+        criticsCount: mergedFacts.facts.length ? 1 : 0,
+        note: `Live pipeline (degraded). ${note}`,
+      });
+    }
+
+    // Normal response
+    const coverage = coverageAgainstFacts(jdReq, mergedFacts);
     return NextResponse.json({
       fitScore: editorOut.fitScore,
-      uncoveredRequirements: missing, // renamed from "missingKeywords"
+      uncoveredRequirements: missing,
       keyGaps: editorOut.key_gaps,
       alignedResume: editorOut.aligned_resume.map((b) => b.bullet).join("\n"),
       rationale: editorOut.rationale,
-      coverage: coverageAgainstFacts(jdReq, mergedFacts),
+      coverage,
       criticsCount: mergedFacts.facts.length ? 1 : 0,
-      note: `Live pipeline with JD skill map → adaptive routing. ${pathNote}`,
+      note: `Live pipeline with JD skill map → adaptive routing. ${note}`,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown";
-    return NextResponse.json({ error: "analysis_failed", details: message }, { status: 500 });
+    // Still return JSON with details so the client can show it
+    return new NextResponse(
+      JSON.stringify({ error: "analysis_failed", details: message }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
   }
 }

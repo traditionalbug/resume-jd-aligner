@@ -39,7 +39,16 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resume, jd }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      if (!res.ok) {
+        // Read the body so we can see server error details
+        let body = "";
+        try {
+          body = await res.text();
+        } catch {}
+        throw new Error(`HTTP ${res.status}${body ? `: ${body}` : ""}`);
+      }
+
       const data = (await res.json()) as AnalyzeResult;
       setResult(data ?? {});
     } catch (err: unknown) {
@@ -89,7 +98,12 @@ export default function Page() {
           </button>
         </form>
 
-        {error && <div className="text-red-400">{error}</div>}
+        {/* Error box with full details */}
+        {error && (
+          <div className="rounded-xl bg-red-900/30 border border-red-500/40 p-4 text-red-200 whitespace-pre-wrap">
+            {error}
+          </div>
+        )}
 
         {result && !error && (
           <div className="mt-6 rounded-2xl bg-zinc-800 p-4 space-y-4">
