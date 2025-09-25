@@ -1,22 +1,21 @@
 "use client";
 import { useState } from "react";
 
+type Coverage = {
+  must_have: { covered: number; total: number; items_uncovered: string[] };
+  responsibilities: { covered: number; total: number; items_uncovered: string[] };
+  nice_to_have: { covered: number; total: number; items_uncovered: string[] };
+  exact_match_ratio: number; // 0..1
+};
+
 type AnalyzeResult = {
-  // works with both mock + live pipeline
   fitScore?: number;
-  matchedCount?: number;
-  totalJDWords?: number;
-  sampleMatches?: string[];
-  note?: string;
-
-  // live pipeline extras
-  missingKeywords?: string[];
+  alignedResume?: string;
   keyGaps?: string[];
-  alignedResume?: string;   // joined bullets from server
+  uncoveredRequirements?: string[];
   rationale?: string;
-  criticsCount?: number;
-
-  // error shape
+  coverage?: Coverage;
+  note?: string;
   error?: string;
   details?: string;
 } | null;
@@ -40,21 +39,19 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resume, jd }),
       });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`HTTP ${res.status}: ${text}`);
-      }
-
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as AnalyzeResult;
       setResult(data ?? {});
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Something went wrong. Try again.";
+      const msg = err instanceof Error ? err.message : "Something went wrong.";
       setError(msg);
     } finally {
       setLoading(false);
     }
   }
+
+  const cov = result?.coverage;
+  const pct = cov ? Math.round((cov.exact_match_ratio ?? 0) * 100) : null;
 
   return (
     <main className="min-h-screen p-6 md:p-10 bg-gradient-to-b from-zinc-900 to-black text-zinc-100">
@@ -73,7 +70,6 @@ export default function Page() {
               required
             />
           </div>
-
           <div>
             <label className="block mb-2 text-sm uppercase tracking-wide text-zinc-400">Job Description</label>
             <textarea
@@ -84,7 +80,6 @@ export default function Page() {
               required
             />
           </div>
-
           <button
             type="submit"
             disabled={loading}
@@ -94,82 +89,52 @@ export default function Page() {
           </button>
         </form>
 
-        {/* Errors */}
         {error && <div className="text-red-400">{error}</div>}
 
-        {/* Results */}
         {result && !error && (
           <div className="mt-6 rounded-2xl bg-zinc-800 p-4 space-y-4">
-            {/* Always show fit score if present */}
             {typeof result.fitScore === "number" && (
               <div className="text-lg font-medium">Fit Score: {result.fitScore}%</div>
             )}
 
-            {/* Mock-only counters (safe to show if present) */}
-            {(typeof result.matchedCount === "number" &&
-              typeof result.totalJDWords === "number") && (
-              <div className="text-sm text-zinc-400">
-                {result.matchedCount} / {result.totalJDWords} JD terms detected in resume
+            {cov && (
+              <div className="text-sm">
+                <div className="text-zinc-400 mb-1">
+                  Coverage (non-LLM): {pct}% — Must-have {cov.must_have.covered}/{cov.must_have.total} ·
+                  Responsibilities {cov.responsibilities.covered}/{cov.responsibilities.total} ·
+                  Nice-to-have {cov.nice_to_have.covered}/{cov.nice_to_have.total}
+                </div>
               </div>
             )}
 
-            {/* Sample matches from mock */}
-            {Array.isArray(result.sampleMatches) && result.sampleMatches.length > 0 && (
+            {Array.isArray(result.uncoveredRequirements) && result.uncoveredRequirements.length > 0 && (
               <div className="text-sm">
-                <div className="text-zinc-400 mb-1">Sample matches</div>
+                <div className="text-zinc-400 mb-1">Uncovered job requirements</div>
                 <div className="flex flex-wrap gap-2">
-                  {result.sampleMatches.map((w, i) => (
+                  {result.uncoveredRequirements.map((w, i) => (
                     <span key={`${w}-${i}`} className="px-2 py-1 rounded-xl bg-zinc-700">{w}</span>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* Live pipeline: Missing Keywords */}
-            {Array.isArray(result.missingKeywords) && result.missingKeywords.length > 0 && (
-              <div className="text-sm">
-                <div className="text-zinc-400 mb-1">Missing keywords</div>
-                <div className="flex flex-wrap gap-2">
-                  {result.missingKeywords.map((w, i) => (
-                    <span key={`${w}-${i}`} className="px-2 py-1 rounded-xl bg-zinc-700">{w}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Live pipeline: Gaps (do NOT auto-add) */}
             {Array.isArray(result.keyGaps) && result.keyGaps.length > 0 && (
               <div className="text-sm">
                 <div className="text-zinc-400 mb-1">Gaps (do NOT add unless true)</div>
                 <ul className="list-disc pl-5 space-y-1">
-                  {result.keyGaps.map((g, i) => (
-                    <li key={`gap-${i}`}>{g}</li>
-                  ))}
+                  {result.keyGaps.map((g, i) => <li key={`gap-${i}`}>{g}</li>)}
                 </ul>
               </div>
             )}
 
-            {/* Live pipeline: Aligned resume draft */}
             {result.alignedResume && (
               <div className="text-sm">
                 <div className="text-zinc-400 mb-1">Aligned resume (draft)</div>
-                <textarea
-                  className="w-full h-56 p-3 rounded-xl bg-zinc-900"
-                  value={result.alignedResume}
-                  readOnly
-                />
+                <textarea className="w-full h-56 p-3 rounded-xl bg-zinc-900" value={result.alignedResume} readOnly />
               </div>
             )}
 
-            {/* Notes / provenance */}
-            {result.note && (
-              <p className="mt-1 text-xs text-zinc-400">{result.note}</p>
-            )}
-            {typeof result.criticsCount === "number" && (
-              <p className="mt-1 text-xs text-zinc-500">
-                Critics used: {result.criticsCount}
-              </p>
-            )}
+            {result.note && <p className="mt-1 text-xs text-zinc-400">{result.note}</p>}
           </div>
         )}
       </div>
